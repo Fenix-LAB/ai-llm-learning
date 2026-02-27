@@ -267,7 +267,7 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 # Crear la base de conocimiento en archivo local
-DB_PATH = "knowledge.sqlite3"
+DB_PATH = "rag-sql-fts5/knowledge.sqlite3"
 db_conn = create_knowledge_db(DB_PATH)
 
 # Crear el retriever
