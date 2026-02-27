@@ -218,6 +218,83 @@ rm -rf pgdata
 
 Los datos se persisten en el directorio `pgdata/` gracias al volumen de Docker.
 
+## Explorar los datos en PostgreSQL
+
+Una vez ejecutado el ejemplo, puedes conectarte al contenedor y explorar la tabla de productos con sus embeddings directamente desde la terminal.
+
+### Conectarse a la base de datos
+
+```bash
+# Abrir una sesion interactiva de psql dentro del contenedor
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector
+```
+
+### Ver la estructura de la tabla
+
+```bash
+# Describir la tabla products (columnas, tipos, etc.)
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c "\d products"
+```
+
+### Ver los productos (sin embeddings)
+
+```bash
+# Listar todos los productos con nombre, categoria, precio y descripcion
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT id, name, category, price FROM products ORDER BY id;"
+```
+
+### Ver los embeddings almacenados
+
+```bash
+# Ver los primeros 5 valores del vector de embedding de cada producto
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT id, name, left(embedding::text, 60) AS embedding_preview FROM products;"
+```
+
+```bash
+# Ver la dimension del embedding de un producto
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT id, name, vector_dims(embedding) AS dimensiones FROM products;"
+```
+
+```bash
+# Ver el embedding completo de un producto especifico (ej: id=1)
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT name, embedding FROM products WHERE id = 1;"
+```
+
+### Ejecutar una busqueda de similitud manual
+
+```bash
+# Ver los 3 productos mas similares al producto con id=1 (Botas TrailBlaze)
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT a.name AS producto, b.name AS similar_a, \
+   (a.embedding <=> b.embedding)::numeric(10,4) AS distancia \
+   FROM products a, products b \
+   WHERE a.id != b.id AND b.id = 1 \
+   ORDER BY distancia LIMIT 3;"
+```
+
+### Ver los indices de la tabla
+
+```bash
+# Listar los indices creados (incluye el GIN para texto completo)
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "\di+ products*"
+```
+
+### Probar la busqueda de texto completo
+
+```bash
+# Buscar productos que coincidan con "senderismo botas" usando tsvector
+docker exec -it rag_pgvector_db psql -U chris -d rag_pgvector -c \
+  "SELECT name, ts_rank_cd(to_tsvector('spanish', name || ' ' || description), query) AS rank \
+   FROM products, plainto_tsquery('spanish', 'senderismo botas') query \
+   WHERE to_tsvector('spanish', name || ' ' || description) @@ query \
+   ORDER BY rank DESC;"
+```
+
 ## Diferencias con el ejemplo original (Azure Agent Framework)
 
 | Concepto | Azure Agent Framework | LangChain |
