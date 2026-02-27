@@ -42,7 +42,7 @@ SQLite FTS5 (Full-Text Search 5) es una extension de SQLite que permite busqueda
 
 ## Requisitos
 
-- Python >= 3.11
+- Python >= 3.13
 - Una API key de OpenAI
 
 ## Instalacion
@@ -71,7 +71,7 @@ DEFAULT_LLM_TEMPERATURE=0.7
 ## Ejecucion
 
 ```bash
-uv run main.py
+uv run rag-sql-fts5/main.py
 ```
 
 ## Ejemplo de salida
@@ -94,12 +94,9 @@ uv run main.py
 
 ```
 rag-sqlite-fts5/
-  .env                  # Variables de entorno (no se sube a git)
-  .python-version       # Version de Python para uv
   knowledge.sqlite3     # Base de datos SQLite con el catalogo (se genera al ejecutar)
   main.py               # Codigo principal con el ejemplo RAG
-  pyproject.toml        # Configuracion del proyecto y dependencias
-  README.md             # Este archivo
+  README.md              # Documentacion del proyecto
 ```
 
 ## Dependencias
