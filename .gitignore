@@ -14,3 +14,4 @@ wheels/
 
 # Docker volumes
 pgdata/
+redis-data/

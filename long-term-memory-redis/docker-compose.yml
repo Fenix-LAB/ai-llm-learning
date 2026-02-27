@@ -1,0 +1,13 @@
+# Redis Stack: incluye Redis + RediSearch (busqueda de texto completo e indices)
+# Necesario para la busqueda de memorias por similitud de texto (FT.SEARCH).
+services:
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: ltm_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+    environment:
+      - REDIS_ARGS=--save 60 1
+    restart: unless-stopped
