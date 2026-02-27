@@ -326,6 +326,182 @@ score = 1/(k + rank_semantica) + 1/(k + rank_palabras_clave)
 
 Donde `k` es una constante (60 por defecto) que controla cuanto peso se da a los resultados de alto ranking. Los productos que aparecen en ambas busquedas obtienen un score mas alto, mientras que los que solo aparecen en una tambien son considerados.
 
+## Que es un embedding y como funciona la vectorizacion
+
+### El concepto
+
+Un **embedding** es una representacion numerica (un vector de numeros decimales) de un texto. La idea es que textos con significado similar produzcan vectores que apunten en direcciones parecidas en un espacio de alta dimension.
+
+Por ejemplo, las palabras "botas de senderismo" y "calzado para montaña" generarian vectores cercanos entre si, aunque no comparten las mismas palabras.
+
+### Como genera OpenAI los embeddings
+
+OpenAI usa un modelo de red neuronal (Transformer) entrenado con millones de textos. El modelo `text-embedding-3-small` que usamos en este ejemplo:
+
+1. **Recibe** un texto (ej: `"Botas de Senderismo TrailBlaze - Calzado: Botas impermeables..."`)
+2. **Tokeniza** el texto: lo divide en sub-palabras (tokens) que el modelo entiende
+3. **Procesa** los tokens a traves de multiples capas de atencion (Transformer)
+4. **Produce** un vector de punto flotante con la dimension solicitada
+
+```plaintext
+Texto de entrada
+      |
+      v
++-----------------+
+| Tokenizacion    |  "Botas" -> [tok_1]  "de" -> [tok_2]  "Senderismo" -> [tok_3] ...
++-----------------+
+      |
+      v
++-----------------+
+| Transformer     |  Multiples capas de atencion que capturan
+| (red neuronal)  |  relaciones semanticas entre tokens
++-----------------+
+      |
+      v
++-----------------+
+| Proyeccion      |  Reduce/ajusta a la dimension solicitada (256)
++-----------------+
+      |
+      v
+[0.0231, -0.0142, 0.0538, ..., -0.0089]   <-- vector de 256 dimensiones
+```
+
+### Ejemplo simplificado de vectorizacion
+
+Imagina un espacio de solo 3 dimensiones donde cada eje representa un concepto:
+
+```plaintext
+           Eje Y (deportes acuaticos)
+           ^
+           |
+     Kayak *
+           |        * Mochila
+           |       /
+           +------/---------> Eje X (senderismo)
+          /      /
+         /  Botas *    * Bastones
+        /
+       v
+    Eje Z (abrigo/frio)
+       * Chaqueta    * Saco de dormir
+```
+
+En la realidad, en lugar de 3 ejes, tenemos **256 dimensiones** (una por cada posicion en el vector). Cada dimension captura algun aspecto del significado del texto. No podemos visualizar 256 dimensiones, pero la matematica funciona igual: textos similares producen vectores cercanos.
+
+### Similitud coseno
+
+Para comparar dos vectores, se calcula el **coseno del angulo** entre ellos:
+
+```plaintext
+                    A . B           (producto punto)
+similitud = ─────────────────── = ──────────────────────
+              ||A|| * ||B||       (magnitud A * magnitud B)
+
+Resultado:
+  1.0  = identicos (angulo 0)
+  0.0  = sin relacion (angulo 90)
+ -1.0  = opuestos (angulo 180)
+```
+
+PostgreSQL con pgvector usa el operador `<=>` para calcular la **distancia coseno** (que es `1 - similitud`), asi que valores menores significan mayor similitud.
+
+## Estructura de la tabla y sus indices
+
+Al ejecutar `\d products` en PostgreSQL, se ve esta estructura:
+
+```
+                                 Table "public.products"
+   Column    |    Type     | Collation | Nullable |               Default
+-------------+-------------+-----------+----------+--------------------------------------
+ id          | integer     |           | not null | nextval('products_id_seq'::regclass)
+ name        | text        |           | not null |
+ category    | text        |           | not null |
+ price       | real        |           | not null |
+ description | text        |           | not null |
+ embedding   | vector(256) |           |          |
+Indexes:
+    "products_pkey" PRIMARY KEY, btree (id)
+    "products_to_tsvector_idx" gin (to_tsvector('spanish'::regconfig, (name || ' '::text) || description))
+```
+
+### Explicacion de cada columna
+
+| Columna | Tipo | Para que sirve |
+|---|---|---|
+| `id` | `integer` | Identificador unico auto-incremental. PostgreSQL usa una secuencia (`products_id_seq`) para generar el siguiente valor automaticamente. |
+| `name` | `text` | Nombre del producto. Se usa en la busqueda de texto completo. |
+| `category` | `text` | Categoria del producto (Calzado, Mochilas, etc.). |
+| `price` | `real` | Precio del producto (numero decimal de precision simple). |
+| `description` | `text` | Descripcion detallada. Se usa en la busqueda de texto completo. |
+| `embedding` | `vector(256)` | Vector de 256 dimensiones generado por OpenAI. Este es el tipo especial que agrega la extension pgvector. Almacena el significado semantico del producto. |
+
+### Explicacion de los indices
+
+Los indices son estructuras de datos que PostgreSQL mantiene **aparte de la tabla** para acelerar las busquedas. Sin indices, cada consulta tendria que recorrer todas las filas (scan secuencial).
+
+#### 1. `products_pkey` -- Indice B-Tree (clave primaria)
+
+```plaintext
+Tipo: btree (arbol balanceado)
+Columna: id
+
+          [4]
+         /   \
+       [2]   [6]
+      / \    / \
+    [1] [3] [5] [7,8]
+
+- Busqueda por id: O(log n) -- muy rapido
+- Se crea automaticamente con PRIMARY KEY
+- Permite buscar un producto por su id sin recorrer toda la tabla
+```
+
+#### 2. `products_to_tsvector_idx` -- Indice GIN (texto completo)
+
+```plaintext
+Tipo: GIN (Generalized Inverted Index)
+Expresion: to_tsvector('spanish', name || ' ' || description)
+
+Funciona como un indice invertido (similar a como funciona un buscador):
+
+Palabra (lexema)    |  Filas donde aparece
+--------------------+----------------------
+"bot"               |  [1]           (botas)
+"senderism"         |  [1, 5]        (senderismo)
+"mochil"            |  [2]           (mochila)
+"chaqueta"          |  [3]
+"kayak"             |  [4]
+"trekking"          |  [5]
+"binocular"         |  [6]
+"linterna"          |  [7]
+"sac"               |  [8]           (saco)
+"impermeabl"        |  [1]           (impermeables)
+...
+
+Nota: las palabras se guardan como "lexemas" (raices).
+El diccionario 'spanish' sabe que:
+  "impermeables" -> "impermeabl"
+  "senderismo"   -> "senderism"
+  "botas"        -> "bot"
+
+Cuando buscas "senderismo botas", PostgreSQL:
+1. Convierte la consulta en lexemas: "senderism" y "bot"
+2. Busca en el indice GIN que filas contienen esos lexemas
+3. Devuelve las filas sin recorrer toda la tabla
+```
+
+#### Por que no hay indice para los embeddings?
+
+En este ejemplo, con solo 8 productos, PostgreSQL hace un scan secuencial (recorre todos los vectores) porque es mas eficiente que mantener un indice. Para tablas mas grandes (miles o millones de filas), se agregaria un indice HNSW o IVFFlat:
+
+```sql
+-- Indice HNSW (recomendado para datasets medianos/grandes)
+CREATE INDEX ON products USING hnsw (embedding vector_cosine_ops);
+
+-- Indice IVFFlat (mas rapido de crear, menos preciso)
+CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+```
+
 ## Referencias
 
 - [pgvector - Extension de vectores para PostgreSQL](https://github.com/pgvector/pgvector)
