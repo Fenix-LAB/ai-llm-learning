@@ -11,6 +11,13 @@ a **LangChain**.
 
 1. [Mapa general](#1-mapa-general)
 2. [Conceptos fundamentales](#2-conceptos-fundamentales)
+   - [Tokens](#tokens)
+   - [Prompts](#prompts)
+   - [System prompt y roles](#system-prompt-y-roles)
+   - [Ventana de contexto](#ventana-de-contexto)
+   - [Temperature](#temperature)
+   - [Embeddings y vectores](#embeddings-y-vectores)
+   - [Chunks](#chunks)
 3. [Tool Calling](#3-tool-calling)
 4. [Multi-Agent (Supervisor)](#4-multi-agent-supervisor)
 5. [Historial de chat persistente](#5-historial-de-chat-persistente)
@@ -66,27 +73,238 @@ Orden recomendado de estudio. Cada bloque construye sobre el anterior:
 Antes de entrar a los ejemplos, estos son los bloques basicos
 que aparecen en todo el repositorio.
 
-### Mensajes y roles
+### Tokens
 
-Todo chat con un LLM es una lista de mensajes. Cada mensaje tiene un **rol**:
+Un **token** es la unidad minima de texto que el LLM procesa.
+No es una palabra, no es un caracter: es un pedazo intermedio.
+El modelo no lee "palabras" — lee tokens.
+
+```
+Texto:    "Hola, como estas hoy?"
+
+Tokens:   ["Hola", ",", " como", " estas", " hoy", "?"]
+             1       2      3        4        5       6
+
+           --> 6 tokens (no 4 palabras, no 22 caracteres)
+```
+
+La tokenizacion depende del modelo. Algunos ejemplos reales:
+
+```
+"inteligencia artificial"  -->  ["int", "elig", "encia", " artificial"]  = 4 tokens
+"AI"                       -->  ["AI"]                                   = 1 token
+"ChatGPT"                  -->  ["Chat", "GPT"]                          = 2 tokens
+"https://example.com"      -->  ["https", "://", "example", ".com"]      = 4 tokens
+```
+
+**Por que importa:**
+
+- El LLM cobra por token (input + output)
+- La ventana de contexto se mide en tokens (no palabras)
+- Regla rapida: 1 token ~= 0.75 palabras en ingles, ~= 0.5 palabras en espanol
+  (el espanol usa mas tokens por palabra por las conjugaciones y tildes)
+
+**Tip**: puedes contar tokens exactos con `tiktoken`, la misma libreria
+que usa OpenAI. Es lo que usamos en `summarize-conversation/` para
+saber cuando activar el resumen.
+
+```python
+import tiktoken
+enc = tiktoken.encoding_for_model("gpt-4o-mini")
+tokens = enc.encode("Hola, como estas hoy?")
+print(len(tokens))  # 8
+print(tokens)       # [39, 735, 11, 1yo, ...]
+```
+
+### Prompts
+
+Un **prompt** es el texto que le envias al LLM para que genere una
+respuesta. Es literalmente la instruccion o pregunta.
+
+Hay diferentes formas de estructurar un prompt dependiendo de lo
+que necesitas:
+
+#### Prompt directo (zero-shot)
+
+Le pides algo sin darle ejemplos. El LLM usa solo su conocimiento:
+
+```
+Prompt:   "Traduce 'buenos dias' al japones"
+Respuesta: "Ohayou gozaimasu"
+```
+
+#### Prompt con ejemplos (few-shot)
+
+Le das ejemplos del formato que esperas antes de la pregunta real:
+
+```
+Prompt:   "Clasifica el sentimiento:
+
+           'Me encanta este producto' -> positivo
+           'Es horrible, no sirve'   -> negativo
+           'Esta bien, nada especial' -> neutral
+
+           'Nunca volveria a comprarlo' -> "
+
+Respuesta: "negativo"
+```
+
+**Tip**: few-shot es muy util cuando quieres un formato especifico
+de salida. En lugar de explicar el formato, muestras ejemplos.
+
+#### Prompt con contexto (RAG)
+
+Le das informacion adicional para que base su respuesta en ella:
+
+```
+Prompt:   "Basandote en el siguiente catalogo:
+           - Botas TrailBlaze: $149, impermeables
+           - Mochila CloudPack: $89, 45 litros
+
+           Que me recomiendas para senderismo?"
+
+Respuesta: "Te recomiendo las Botas TrailBlaze ($149)..."
+```
+
+Esto es exactamente lo que hacen los ejemplos de RAG (`rag-sql-fts5/`
+y `rag-pgvector/`): buscan informacion relevante y la inyectan en
+el prompt antes de enviarlo al LLM.
+
+#### Prompt con instrucciones de sistema
+
+Se separa la instruccion general (system) de la pregunta (user):
+
+```
+System:   "Eres un chef experto. Responde en espanol.
+           Da recetas con maximo 5 ingredientes."
+
+User:     "Quiero algo con pollo"
+
+           --> El LLM responde como chef, en espanol,
+               con receta de maximo 5 ingredientes
+```
+
+Esto nos lleva al siguiente concepto...
+
+### System prompt y roles
+
+El LLM recibe una lista de mensajes. Cada mensaje tiene un **rol**
+que le dice al modelo "quien habla":
 
 ```
 +------------------+---------------------------------------------------+
-| Rol              | Para que sirve                                    |
-+------------------+---------------------------------------------------+
-| SystemMessage    | Instrucciones para el LLM (personalidad, reglas). |
-|                  | Va al inicio, el usuario no lo ve.                |
-+------------------+---------------------------------------------------+
-| HumanMessage     | Lo que dice el usuario.                           |
-+------------------+---------------------------------------------------+
-| AIMessage        | Lo que responde el LLM.                           |
-+------------------+---------------------------------------------------+
-| ToolMessage      | Resultado de una herramienta ejecutada.            |
-|                  | Solo aparece en tool calling.                     |
-+------------------+---------------------------------------------------+
+| Rol              | Quien habla        | Para que sirve               |
++------------------+--------------------+------------------------------+
+| system           | El desarrollador   | Instrucciones, personalidad, |
+|                  | (tu)               | reglas, formato de respuesta |
++------------------+--------------------+------------------------------+
+| user / human     | El usuario final   | La pregunta o peticion       |
++------------------+--------------------+------------------------------+
+| assistant / ai   | El LLM             | La respuesta generada        |
++------------------+--------------------+------------------------------+
+| tool             | Una herramienta    | Resultado de ejecutar un     |
+|                  | ejecutada          | @tool (solo en tool calling) |
++------------------+--------------------+------------------------------+
 ```
 
-El LLM siempre recibe la lista completa y genera el siguiente AIMessage.
+#### El system prompt en detalle
+
+El system prompt es **la instruccion mas importante**. Define
+quien es el LLM, como debe comportarse y que restricciones tiene.
+El usuario nunca lo ve, pero moldea todas las respuestas:
+
+```
++-------------------------------------------------------------------+
+|                    Lista de mensajes al LLM                       |
++-------------------------------------------------------------------+
+|                                                                   |
+|  SystemMessage (system prompt)          <-- lo escribes tu        |
+|  "Eres un asistente de planificacion                              |
+|   de fin de semana. Ayudas a los                                  |
+|   usuarios a elegir actividades                                   |
+|   segun el clima. Responde en espanol."                           |
+|                                                                   |
+|  HumanMessage                           <-- lo escribe el usuario |
+|  "Que puedo hacer este sabado?"                                   |
+|                                                                   |
+|  AIMessage                              <-- lo genera el LLM      |
+|  "Para este sabado te recomiendo..."                              |
+|                                                                   |
+|  HumanMessage                                                     |
+|  "Y si llueve?"                                                   |
+|                                                                   |
+|  AIMessage                                                        |
+|  "Si llueve, podrias visitar..."                                  |
+|                                                                   |
++-------------------------------------------------------------------+
+```
+
+#### System prompt vs user prompt: la diferencia clave
+
+```
++-------------------------------+---------------------------------------+
+| System prompt                 | User prompt                           |
++-------------------------------+---------------------------------------+
+| Lo escribe el desarrollador   | Lo escribe el usuario final           |
++-------------------------------+---------------------------------------+
+| Se envia una vez al inicio    | Se envia en cada turno                |
++-------------------------------+---------------------------------------+
+| Define personalidad, reglas   | Contiene la pregunta o peticion       |
+| y restricciones               |                                       |
++-------------------------------+---------------------------------------+
+| El usuario NO lo ve           | El usuario SI lo ve (el lo escribio)  |
++-------------------------------+---------------------------------------+
+| Ejemplo: "Eres un chef.       | Ejemplo: "Que puedo cocinar           |
+| Solo recetas veganas.          | con papas?"                           |
+| Responde en espanol."         |                                       |
++-------------------------------+---------------------------------------+
+```
+
+**Pregunta frecuente**: "Si el system prompt dice 'Responde en
+espanol' pero el usuario escribe en ingles, que pasa?"
+--> El LLM intenta seguir ambas instrucciones. Generalmente el
+system prompt tiene prioridad, asi que respondera en espanol.
+Pero no es garantia absoluta — los LLMs son probabilisticos.
+
+#### Tips para escribir buenos system prompts
+
+```
+Malo:   "Eres un asistente."
+         (demasiado vago, el LLM no sabe que hacer)
+
+Mejor:  "Eres un asistente de viajes. Recomiendas destinos
+         turisticos en Latinoamerica. Responde en espanol
+         con listas cortas de maximo 3 opciones."
+         (especifico, acotado, con formato)
+
+Avanzado: "Eres un asistente de soporte tecnico.
+           Reglas:
+           - Solo respondes sobre el producto X
+           - Si no sabes la respuesta, di 'No tengo esa info'
+           - Nunca inventes datos tecnicos
+           - Formato: respuesta corta + link a documentacion"
+           (reglas explicitas, restricciones, formato)
+```
+
+#### Donde aparece cada rol en este repositorio
+
+En LangChain, cada rol tiene su propia clase:
+
+```python
+from langchain_core.messages import (
+    SystemMessage,    # system  -> instrucciones del desarrollador
+    HumanMessage,     # user    -> pregunta del usuario
+    AIMessage,        # assistant -> respuesta del LLM
+    ToolMessage,      # tool    -> resultado de herramienta
+)
+
+messages = [
+    SystemMessage(content="Eres un chef experto..."),
+    HumanMessage(content="Que puedo cocinar con papas?"),
+    AIMessage(content="Te recomiendo tortilla espanola..."),
+    HumanMessage(content="Dame la receta"),
+]
+```
 
 ### Ventana de contexto
 
@@ -111,6 +329,15 @@ debe caber en esa ventana.
 +---------------------------------------------------------------+
 ```
 
+Ventanas de contexto de modelos comunes:
+
+```
+gpt-4o-mini     -->  128,000 tokens  (~96,000 palabras)
+gpt-4o          -->  128,000 tokens
+gpt-3.5-turbo   -->    16,385 tokens  (~12,000 palabras)
+claude-3.5      -->  200,000 tokens
+```
+
 Esto motiva los patrones de **compactacion** (seccion 6) y
 **memoria a largo plazo** (seccion 7).
 
@@ -126,6 +353,228 @@ temperature = 1.0  -->  Mas creativo, menos predecible
 
 Para tool calling y tareas precisas conviene 0.0-0.3.
 Para conversacion general, 0.7-0.9.
+
+### Embeddings y vectores
+
+Estos conceptos aparecen en los ejemplos de RAG (`rag-pgvector/`)
+y en la memoria a largo plazo (`long-term-memory-redis/`).
+
+#### Que es un vector
+
+Un **vector** es simplemente una lista ordenada de numeros:
+
+```
+[0.23, -0.15, 0.87, 0.02, ..., -0.41]
+```
+
+En matematicas, un vector tiene magnitud y direccion. En el contexto
+de LLMs, un vector es una lista de numeros decimales que representa
+"algo" en un espacio de muchas dimensiones.
+
+```
+Un punto en 2D:    [x, y]          = [3, 5]
+Un punto en 3D:    [x, y, z]       = [3, 5, 2]
+Un embedding:      [d1, d2, ..., d256] = [0.23, -0.15, ..., -0.41]
+                                          ^
+                                 256 dimensiones (no las puedes
+                                 visualizar, pero la matematica
+                                 funciona igual que en 2D/3D)
+```
+
+#### Que es un embedding
+
+Un **embedding** es un vector que representa el **significado**
+de un texto. Es la forma que tiene el LLM de convertir palabras
+en numeros para poder compararlas matematicamente.
+
+```
+Texto                          Embedding (vector)
+─────                          ──────────────────
+"botas de senderismo"    -->   [0.82, 0.15, -0.03, 0.91, ...]
+"calzado para montaña"  -->   [0.79, 0.18, -0.01, 0.88, ...]  <-- cercano!
+"receta de pasta"        -->   [-0.12, 0.65, 0.44, -0.30, ...]  <-- lejano
+```
+
+La magia es que textos con significado similar producen vectores
+que apuntan en direcciones parecidas, **aunque no compartan palabras**.
+
+#### Como se genera un embedding
+
+Un modelo de embeddings (no el LLM de chat, otro modelo distinto)
+procesa el texto y produce el vector:
+
+```
+ "Botas de senderismo impermeables"
+    |
+    v
+ +---------------------------+
+ |  Modelo de embeddings     |
+ |  (text-embedding-3-small) |
+ |                           |
+ |  1. Tokeniza el texto     |
+ |  2. Procesa con red       |
+ |     neuronal (Transformer)|
+ |  3. Produce vector de     |
+ |     dimension fija        |
+ +---------------------------+
+    |
+    v
+ [0.0231, -0.0142, 0.0538, ..., -0.0089]
+  ^                                     ^
+  |_____ 256 numeros decimales ________|
+```
+
+**Dato importante**: el modelo de embeddings y el modelo de chat
+son modelos DIFERENTES:
+
+```
++----------------------------+------------------------------------------+
+| Modelo de embeddings       | Modelo de chat (LLM)                     |
++----------------------------+------------------------------------------+
+| text-embedding-3-small     | gpt-4o-mini                              |
++----------------------------+------------------------------------------+
+| Entrada: texto             | Entrada: lista de mensajes               |
+| Salida: vector de numeros  | Salida: texto generado                   |
++----------------------------+------------------------------------------+
+| Para: busqueda, similitud  | Para: conversacion, razonamiento         |
++----------------------------+------------------------------------------+
+| Barato ($0.02/1M tokens)   | Mas caro ($0.15/1M tokens input)         |
++----------------------------+------------------------------------------+
+```
+
+#### Como se comparan embeddings: similitud coseno
+
+Para saber si dos textos son similares, se calcula el **coseno del
+angulo** entre sus vectores:
+
+```
+                  A . B              (producto punto)
+similitud = ─────────────────  =  ──────────────────────
+             ||A|| x ||B||       (magnitud A x magnitud B)
+
+Resultado:
+  1.0  = significado identico   (angulo 0 grados)
+  0.0  = sin relacion           (angulo 90 grados)
+ -1.0  = significado opuesto    (angulo 180 grados)
+```
+
+Ejemplo visual simplificado (2D en lugar de 256D):
+
+```
+           ^ eje Y
+           |
+           |     * "calzado montaña" (0.79, 0.88)
+           |    /
+           |   /  <-- angulo pequeno = similitud alta
+           |  /
+           | * "botas senderismo" (0.82, 0.91)
+           |
+           +──────────────────────> eje X
+           |
+           |
+           |
+           * "receta pasta" (-0.12, 0.65)
+               ^
+               angulo grande = similitud baja
+```
+
+En PostgreSQL con pgvector, el operador `<=>` calcula la **distancia
+coseno** (que es `1 - similitud`), asi que valores menores = mas similar.
+
+#### Donde se usan embeddings en este repositorio
+
+```
+rag-pgvector/             Cada producto se convierte en un embedding.
+                          La pregunta del usuario tambien se convierte
+                          en embedding. Se busca por similitud coseno.
+
+long-term-memory-redis/   Los hechos memorizados se buscan con
+                          RediSearch (busqueda de texto completo,
+                          no vectorial en este caso).
+```
+
+### Chunks
+
+Un **chunk** (trozo) es un pedazo de un documento grande que se divide
+para poder procesarlo. Los modelos de embeddings tienen un limite
+de tokens que pueden procesar a la vez, y ademas los chunks mas
+pequenos producen embeddings mas precisos.
+
+#### Por que dividir en chunks
+
+```
+Documento de 50 paginas
+    |
+    v
+ Opcion A: un solo embedding para todo
+    --> Vector muy generico, pierde detalles
+    --> Puede exceder el limite del modelo de embeddings
+
+ Opcion B: dividir en chunks y un embedding por chunk
+    --> Vectores mas especificos y precisos
+    --> Busqueda mas granular (encuentra el parrafo exacto)
+```
+
+#### Ejemplo de chunking
+
+```
+ Documento original (2000 palabras):
+ +------------------------------------------------------------------+
+ |  Capitulo 1: Historia del cafe                                   |
+ |  El cafe se origino en Etiopia en el siglo IX...                 |
+ |  Los comerciantes arabes lo llevaron a Yemen...                  |
+ |  En el siglo XVII llego a Europa...                              |
+ |                                                                  |
+ |  Capitulo 2: Tipos de cafe                                       |
+ |  El arabica es el mas popular con 60% del mercado...             |
+ |  El robusta tiene mas cafeina pero menos sabor...                |
+ |  ...                                                             |
+ +------------------------------------------------------------------+
+                        |
+                        v (chunking)
+ +---------------------+  +---------------------+  +------------------+
+ | Chunk 1 (400 words) |  | Chunk 2 (400 words) |  | Chunk 3 ...      |
+ | "El cafe se origino |  | "En el siglo XVII   |  | "El arabica es   |
+ |  en Etiopia en el   |  |  llego a Europa..." |  |  el mas popular  |
+ |  siglo IX..."       |  |                     |  |  con 60%..."     |
+ +---------------------+  +---------------------+  +------------------+
+         |                          |                        |
+         v                          v                        v
+   embedding 1               embedding 2              embedding 3
+   [0.12, 0.45, ...]        [0.34, 0.22, ...]        [0.56, 0.11, ...]
+```
+
+#### Chunking en este repositorio
+
+En los ejemplos de RAG de este repositorio (`rag-sql-fts5/` y
+`rag-pgvector/`), cada **producto** ya es un "chunk" natural:
+tiene nombre, descripcion y precio. No necesitamos dividir nada
+porque los datos ya vienen en unidades pequenas.
+
+En aplicaciones reales con documentos largos (PDFs, wikis, manuales),
+el chunking es un paso critico del pipeline de RAG:
+
+```
+ Documentos --> Chunking --> Embeddings --> Base de datos vectorial
+                  ^
+                  |
+        Estrategias comunes:
+        - Por parrafos
+        - Por numero fijo de tokens (ej. 500 tokens)
+        - Por oraciones con overlap (solapamiento)
+        - Por encabezados / secciones del documento
+```
+
+**Tip**: el overlap (solapamiento) entre chunks es importante. Si
+un chunk termina a mitad de una idea, el siguiente chunk debe
+repetir las ultimas oraciones para no perder contexto:
+
+```
+Chunk 1: "...los arabes lo llevaron a Yemen donde se cultivo"
+Chunk 2: "...se cultivo extensamente. En el siglo XVII llego a Europa"
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+                overlap (se repite para mantener contexto)
+```
 
 ---
 
