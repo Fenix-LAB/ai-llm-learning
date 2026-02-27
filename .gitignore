@@ -11,3 +11,6 @@ wheels/
 
 .env
 *.sqlite3
+
+# Docker volumes
+pgdata/
